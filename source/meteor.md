@@ -10,7 +10,7 @@ To install `apollo`, run these commands:
 
 ```text
 meteor add apollo
-meteor npm install --save apollo-client graphql-server-express express graphql graphql-tools body-parser
+meteor npm install --save apollo-client graphql-server-express express graphql graphql-tools body-parser graphql-subscriptions subscriptions-transport-ws
 ```
 
 ## Usage
@@ -91,8 +91,6 @@ The [GraphiQL](https://github.com/graphql/graphiql) url by default is [http://lo
 }
 ```
 
-
-
 Inside your resolvers, if the user is logged in, their id will be `context.userId` and their user doc will be `context.user`:
 
 ```js
@@ -107,6 +105,49 @@ export const resolvers = {
   },
   User: ...
 }
+```
+
+### Subscriptions
+
+The `apollo` package can set up GraphQL subscriptions for you if you explicitly tell it to do so. It is following the same principles as [explained in the docs](http://dev.apollodata.com/tools/graphql-subscriptions/setup.html).
+
+Client-side, pass the `enableSubscriptions` key set to `true` to the `createMeteorNetworkInterface`.
+
+```js
+const networkInterface = createMeteorNetworkInterface({ enableSubscriptions: true });
+
+const client = new ApolloClient(meteorClientConfig({ networkInterface }));
+```
+
+Server-side, if you want to enable the GraphQL subscriptions in your resolvers:
+
+```js
+// resolvers.js
+
+import { PubSub } from 'graphql-subscriptions';
+
+export const pubsub = new PubSub();
+
+// then, you can use `pubsub` in your resolvers
+```
+
+Note that the same `context` is used for both the resolvers and the GraphQL subscriptions. This also means that [authentication in the websocket transport](http://dev.apollodata.com/tools/graphql-subscriptions/authentication.html) is configured out-of-the-box.
+
+And then, when configuring the server:
+
+```js
+// server.js
+
+// ...
+import { resolvers, pubsub } from '/imports/api/resolvers';
+
+// ...
+
+createApolloServer({
+  schema,
+  pubsub, // a websocket server will be created for you if you add a pubsub system
+  context, // your context (collections, models, ...) shared between the resolvers & the pubsub system
+});
 ```
 
 ### Query batching
@@ -150,8 +191,10 @@ The default configuration of the client is:
 - `uri`: `Meteor.absoluteUrl('graphql')`, points to the default GraphQL server endpoint, such as http://locahost:3000/graphql or https://www.my-app.com/graphql.
 - `opts`: `{}`, additional [`FetchOptions`](https://github.github.io/fetch#options) passed to the [`NetworkInterface`](http://dev.apollodata.com/core/network.html#createNetworkInterface).
 - `useMeteorAccounts`: `true`, enable the Meteor User Accounts middleware to identify the user with every request thanks to her login token.
-- `batchingInterface`: `false`, if `true` use a [`BatchedNetworkInterface`](http://dev.apollodata.com/core/network.html#query-batching) instead of [`NetworkInterface`](http://dev.apollodata.com/core/network.html#network-interfaces).
+- `batchingInterface`: `true`, use a [`BatchedNetworkInterface`](http://dev.apollodata.com/core/network.html#query-batching) instead of [`NetworkInterface`](http://dev.apollodata.com/core/network.html#network-interfaces).
 - `batchInterval`: `10`, if the `batchingInterface` field is `true`, this field defines the batch interval to determine how long the network interface batches up queries before sending them to the server.
+- `enableSubscriptions`: `false`, enhance the network interface with a configured [SubscriptionClient](https://github.com/apollographql/subscriptions-transport-ws#client-browser) to handle GraphQL subscriptions.
+- `websocketUri`: point by default to a "websocket-ified" version of your `Meteor.absoluteUrl` (ie. `ROOT_URL`) on the `/subscriptions` endpoint (ex: `wss://your-meteor-app.com/subscriptions`). You can replace it by any websocket uri.  
 
 Additionally, if the `useMeteorAccounts` is set to `true`, you can add to your `customNetworkInterface` a `loginToken` field while doing [server-side rendering](http://dev.apollodata.com/core/meteor.html#SSR) to handle the current user.
 
@@ -162,8 +205,8 @@ import ApolloClient from 'apollo-client'
 import { createMeteorNetworkInterface, meteorClientConfig } from 'meteor/apollo';
 
 const networkInterface = createMeteorNetworkInterface({
-  // use a batched network interface instead of a classic network interface
-  batchingInterface: true, 
+  // enhance the network interface to support graphql subscriptions
+  enableSubscriptions: true, 
 });
 
 const client = new ApolloClient(meteorClientConfig({ networkInterface }));
@@ -182,7 +225,10 @@ Defining a `customOptions` object extends or replaces fields of the default conf
 - `formatError`: a function used to format errors before returning them to clients.
 - `debug`: `Meteor.isDevelopment`, additional debug logging if execution errors occur in dev mode.
 
-It is on `customOptions` object that you pass a `schema` field created by `makeExecutableSchema` ([see usage](http://dev.apollodata.com/core/meteor.html#Server)).
+It is on `customOptions` object that you pass:
+- a `schema` created by `makeExecutableSchema` ([see usage](http://dev.apollodata.com/core/meteor.html#Server)).
+- a possible `pubsub` system to create a [SubscriptionServer & SubscriptionManager](http://dev.apollodata.com/tools/graphql-subscriptions/setup.html).
+- a `context` object handling your back-end connectors.
 
 `customConfig` is an optional object that can be used to replace the configuration of how the Express server itself runs: 
 - `path`: [path](http://expressjs.com/en/api.html#app.use) of the GraphQL server. This is the endpoint where the queries & mutations are sent. Default: `/graphql`.
@@ -190,6 +236,9 @@ It is on `customOptions` object that you pass a `schema` field created by `makeE
 - `graphiql`: whether to enable [GraphiQL](https://github.com/graphql/graphiql). Default: `true` in development and `false` in production.
 - `graphiqlPath`: path for GraphiQL. Default: `/graphiql` (note the _i_).
 - `graphiqlOptions`: [GraphiQL options](http://dev.apollodata.com/tools/apollo-server/graphiql.html#graphiqlOptions) Default: attempts to use `Meteor.loginToken` from localStorage to log you in.
+- `subscriptionsPath`: [path](http://dev.apollodata.com/tools/graphql-subscriptions/meteor.html) of the GraphQL subscription server bound to Meteor's `WebApp.httpServer`. Default: `/subscriptions`.
+- `subscriptionSetupFunctions`: filter subscription's publications ([see usage](http://dev.apollodata.com/tools/graphql-subscriptions/setup.html#filter-subscriptions)). Default: `{}`. 
+- `subscriptionLifecycle`: an object to [add lifecycle hooks](http://dev.apollodata.com/tools/graphql-subscriptions/lifecycle-events.html) to your subscription server. Default: `onConnect` to handle resolvers `context` & authentication.
 
 It will use the same port as your Meteor server. Don't put a route or static asset at the same path as the GraphQL route or the GraphiQL route if in use (again, defaults are `/graphql` and `/graphiql` respectively).
 
